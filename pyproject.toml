@@ -1,0 +1,133 @@
+[project]
+name = 'academic-kit'
+version = '0.1.0'
+description = 'A launcher window with one button per academic desktop tool.'
+readme = 'README.md'
+requires-python = '>=3.12'
+# Each tool is an independent workspace member under tools/. Listing it
+# here installs it next to the launcher, which finds it through its
+# 'academic_kit.tools' entry point.
+dependencies = [
+    'doi2ref',
+    'figconvert',
+]
+
+[project.urls]
+Homepage = 'https://github.com/betterweizh/academic-kit'
+Issues = 'https://github.com/betterweizh/academic-kit/issues'
+Changelog = 'https://github.com/betterweizh/academic-kit/blob/main/CHANGELOG.md'
+
+[project.gui-scripts]
+academic-kit = 'academic_kit.gui:main'
+
+[dependency-groups]
+dev = [
+    'mypy',
+    'pre-commit',
+    'pylint',
+    'pytest',
+    'ruff',
+]
+
+[tool.uv.workspace]
+members = ['tools/*']
+
+[tool.uv.sources]
+doi2ref = { workspace = true }
+figconvert = { workspace = true }
+
+[build-system]
+requires = ['hatchling']
+build-backend = 'hatchling.build'
+
+# The tool settings below apply to the launcher and to every tool under
+# tools/, whose own pyproject.toml files carry no [tool.*] sections.
+
+[tool.ruff]
+line-length = 88
+target-version = 'py312'
+
+[tool.ruff.lint]
+select = [
+    'E',
+    'W',
+    'F',
+    'I',
+    'B',
+    'UP',
+    'N',
+    'D',
+    'Q',
+    'ERA',
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = 'numpy'
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 72
+
+[tool.ruff.lint.flake8-quotes]
+inline-quotes = 'single'
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    'academic_kit',
+    'doi2ref',
+    'figconvert',
+]
+
+[tool.ruff.lint.per-file-ignores]
+'*.ipynb' = ['D']
+
+[tool.mypy]
+python_version = '3.12'
+strict = true
+mypy_path = [
+    'src',
+    'tools/doi2ref/src',
+    'tools/figconvert/src',
+]
+files = [
+    'src',
+    'tools/doi2ref/src',
+    'tools/figconvert/src',
+]
+
+[tool.pylint.main]
+load-plugins = ['pylint.extensions.magic_value']
+
+[tool.pylint.magic-value]
+# sys.platform is compared with literals because mypy only narrows
+# platform-specific APIs (ctypes.windll, os.startfile) on that form.
+valid-magic-values = [
+    0,
+    -1,
+    1,
+    '',
+    '__main__',
+    'win32',
+    'darwin',
+]
+
+[tool.pylint.format]
+max-line-length = 88
+
+[tool.pylint.basic]
+no-docstring-rgx = '^__init__$'
+
+[tool.pylint.'messages control']
+disable = [
+    'line-too-long',
+    'unused-import',
+    'too-few-public-methods',
+]
+
+[tool.pytest.ini_options]
+testpaths = [
+    'tests',
+    'tools/*/tests',
+]
+# Tools have test modules with the same names (test_core.py), so import
+# them by path instead of by package name.
+addopts = ['--import-mode=importlib']

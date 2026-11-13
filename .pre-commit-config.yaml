@@ -1,0 +1,45 @@
+# The hooks run the versions pinned in uv.lock, so pre-commit and
+# ``uv run`` always agree. There is deliberately no formatter hook: the
+# code is laid out by hand (see README.md, Development).
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      # Pylint runs once per package: the tools are independent on
+      # purpose, so code they share by copy is not reported as
+      # duplicate code.
+      - id: pylint-launcher
+        name: pylint (launcher)
+        entry: uv run pylint src
+        language: system
+        files: ^src/
+        types: [python]
+        pass_filenames: false
+
+      - id: pylint-doi2ref
+        name: pylint (doi2ref)
+        entry: uv run pylint tools/doi2ref/src
+        language: system
+        files: ^tools/doi2ref/src/
+        types: [python]
+        pass_filenames: false
+
+      - id: pylint-figconvert
+        name: pylint (figconvert)
+        entry: uv run pylint tools/figconvert/src
+        language: system
+        files: ^tools/figconvert/src/
+        types: [python]
+        pass_filenames: false

@@ -1,0 +1,27 @@
+[project]
+name = 'figconvert'
+version = '0.1.0'
+description = 'Convert vector and raster figures, one at a time or in batches, to raster images at a chosen resolution, with a simple GUI.'
+readme = 'README.md'
+requires-python = '>=3.12'
+dependencies = [
+    'pillow>=11.0',
+    'pymupdf>=1.25',
+]
+
+[project.urls]
+Homepage = 'https://github.com/betterweizh/academic-kit/tree/main/tools/figconvert'
+Issues = 'https://github.com/betterweizh/academic-kit/issues'
+Changelog = 'https://github.com/betterweizh/academic-kit/blob/main/tools/figconvert/CHANGELOG.md'
+
+[project.gui-scripts]
+figconvert = 'figconvert.gui:main'
+
+# Lets the academic-kit launcher show a button that runs
+# ``python -m figconvert``. The tool does not depend on the launcher.
+[project.entry-points.'academic_kit.tools']
+figconvert = 'figconvert'
+
+[build-system]
+requires = ['hatchling']
+build-backend = 'hatchling.build'

@@ -1,0 +1,51 @@
+[project]
+name = 'doi2ref'
+version = '0.1.0'
+description = 'Turn DOIs into formatted citations, BibTeX, RIS or CSL JSON, with a simple GUI.'
+readme = 'README.md'
+license = 'MIT'
+license-files = ['LICENSE']
+requires-python = '>=3.12'
+dependencies = []
+keywords = [
+    'doi',
+    'bibtex',
+    'citation',
+    'reference',
+    'crossref',
+    'ris',
+    'csl',
+]
+classifiers = [
+    'Development Status :: 3 - Alpha',
+    'Environment :: Win32 (MS Windows)',
+    'Environment :: MacOS X',
+    'Environment :: X11 Applications',
+    'Intended Audience :: Science/Research',
+    'Operating System :: OS Independent',
+    'Programming Language :: Python :: 3',
+    'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.13',
+    'Topic :: Scientific/Engineering',
+    'Topic :: Text Processing :: Markup :: LaTeX',
+]
+
+[project.urls]
+Homepage = 'https://github.com/betterweizh/academic-kit/tree/main/tools/doi2ref'
+Issues = 'https://github.com/betterweizh/academic-kit/issues'
+Changelog = 'https://github.com/betterweizh/academic-kit/blob/main/tools/doi2ref/CHANGELOG.md'
+
+[project.gui-scripts]
+doi2ref = 'doi2ref.gui:main'
+
+[project.scripts]
+doi2ref-cli = 'doi2ref.cli:main'
+
+# Lets the academic-kit launcher show a button that runs
+# ``python -m doi2ref``. The tool does not depend on the launcher.
+[project.entry-points.'academic_kit.tools']
+doi2ref = 'doi2ref'
+
+[build-system]
+requires = ['hatchling']
+build-backend = 'hatchling.build'
