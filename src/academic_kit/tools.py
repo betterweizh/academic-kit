@@ -13,19 +13,25 @@ import the launcher, and each one runs in its own process, so a tool
 that fails cannot affect the launcher or any other tool.
 """
 
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
 from importlib import metadata
+from pathlib import Path
 
 __all__ = [
     'ENTRY_POINT_GROUP',
+    'LOG_FILE_ENV',
     'Tool',
     'discover_tools',
     'launch_tool',
 ]
 
 ENTRY_POINT_GROUP = 'academic_kit.tools'
+# Tells a started tool which file to write its log to. The tool reads
+# it without importing the launcher.
+LOG_FILE_ENV = 'ACADEMIC_KIT_LOG_FILE'
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -69,13 +75,17 @@ def discover_tools() -> list[Tool]:
     return sorted(tools, key=_sort_key)
 
 
-def launch_tool(tool: Tool) -> subprocess.Popen[bytes]:
+def launch_tool(tool: Tool, log_file: Path | None = None) -> subprocess.Popen[bytes]:
     """Start a tool in its own process with the launcher's Python.
 
     Parameters
     ----------
     tool : Tool
         Tool to start.
+    log_file : Path or None, default None
+        File the tool should write its log to, passed in the
+        ``ACADEMIC_KIT_LOG_FILE`` environment variable. None leaves the
+        tool to choose.
 
     Returns
     -------
@@ -87,12 +97,16 @@ def launch_tool(tool: Tool) -> subprocess.Popen[bytes]:
     OSError
         If the process cannot be started.
     """
+    environment = dict(os.environ)
+    if log_file is not None:
+        environment[LOG_FILE_ENV] = str(log_file)
     return subprocess.Popen(
         [
             sys.executable,
             '-m',
             tool.module,
-        ]
+        ],
+        env=environment,
     )
 
 

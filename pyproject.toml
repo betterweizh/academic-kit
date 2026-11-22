@@ -1,6 +1,6 @@
 [project]
 name = 'academic-kit'
-version = '0.1.0'
+version = '0.1.1'
 description = 'A launcher window with one button per academic desktop tool.'
 readme = 'README.md'
 requires-python = '>=3.12'
@@ -10,6 +10,7 @@ requires-python = '>=3.12'
 dependencies = [
     'doi2ref',
     'figconvert',
+    'PyQt6>=6.7',
 ]
 
 [project.urls]
@@ -26,6 +27,7 @@ dev = [
     'pre-commit',
     'pylint',
     'pytest',
+    'pytest-qt',
     'ruff',
 ]
 
@@ -94,8 +96,15 @@ files = [
     'tools/figconvert/src',
 ]
 
+# CairoSVG ships without type information.
+[[tool.mypy.overrides]]
+module = ['cairosvg']
+ignore_missing_imports = true
+
 [tool.pylint.main]
 load-plugins = ['pylint.extensions.magic_value']
+# PyQt6 is a compiled extension; let Pylint import it to see its names.
+extension-pkg-allow-list = ['PyQt6']
 
 [tool.pylint.magic-value]
 # sys.platform is compared with literals because mypy only narrows
@@ -131,3 +140,5 @@ testpaths = [
 # Tools have test modules with the same names (test_core.py), so import
 # them by path instead of by package name.
 addopts = ['--import-mode=importlib']
+# The Qt binding pytest-qt drives in the GUI tests.
+qt_api = 'pyqt6'

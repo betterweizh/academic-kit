@@ -6,6 +6,30 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-22
+
+Released as part of academic-kit 0.1.1.
+
+### Added
+
+- A log file, `doi2ref.log`, recording each run, each batch with its
+  settings, every request (source, attempt, retry) with its result, and
+  every error with its traceback; the failure dialog names the file. Its
+  folder and name are set in the academic-kit launcher's Settings → Logs
+  dialog; started on its own, doi2ref writes `doi2ref.log` in the folder
+  it was started from.
+
+### Changed
+
+- The window is rebuilt with PyQt6 instead of Tkinter. It looks and
+  works as before; Qt scales it for high-DPI screens itself.
+- doi2ref now depends on PyQt6 (GPL v3) for its window.
+
+### Removed
+
+- The `doi2ref-cli` command-line interface. Every function is used
+  through the window.
+
 ## [0.1.0] - 2026-11-13
 
 Released as part of academic-kit 0.1.0.
@@ -61,6 +85,7 @@ First release.
 - Development tooling: Ruff for formatting and linting, mypy type
   checks, pytest tests and pre-commit hooks for Ruff and mypy.
 
-[Unreleased]: https://github.com/betterweizh/academic-kit/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/betterweizh/academic-kit/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/betterweizh/academic-kit/releases/tag/v0.1.1
 [0.1.0]: https://github.com/betterweizh/academic-kit/releases/tag/v0.1.0
 [0.0.1]: https://github.com/betterweizh/doi2ref/releases/tag/v0.0.1

@@ -1,22 +1,46 @@
-"""Tkinter window for turning DOIs into formatted references.
+"""Window (PyQt6) for turning DOIs into formatted references.
 
 Layout: two equal-width text panels (DOIs, references) and a sidebar of
 options and actions, with the progress bar and status text at the
-sidebar's bottom. The window cannot shrink below the size that shows
-every control. Convert appends each new reference to the right panel as
-it arrives. Lookups run on a background thread so the window stays
-responsive; results come back through a queue polled with ``after``,
-because Tk widgets must only be touched from the main thread.
+sidebar's bottom. The sidebar has a fixed width, so the panels never
+move when the status text changes. Convert appends each new reference
+to the right panel as it arrives. Lookups run on a background thread so
+the window stays responsive; results come back through a queue that a
+timer polls, because widgets must only be touched from the main thread.
 """
 
+import logging
+import platform
 import queue
 import sys
 import threading
-import tkinter as tk
+import time
 from dataclasses import dataclass
-from tkinter import font as tkfont
-from tkinter import messagebox, ttk
-from tkinter.scrolledtext import ScrolledText
+from pathlib import Path
+from types import TracebackType
+
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QFontDatabase, QKeyEvent, QKeySequence, QShortcut
+from PyQt6.QtWidgets import (
+    QApplication,
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QRadioButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 from doi2ref import __version__
 from doi2ref.core import (
@@ -32,68 +56,28 @@ from doi2ref.core import (
     extract_dois,
     fetch_references,
 )
+from doi2ref.logs import log_uncaught, setup_logging
+
+_LOGGER = logging.getLogger(__name__)
 
 _POLL_INTERVAL_MS = 100
-_WINDOWS_TEXT_FONT = (
-    'Consolas',
-    10,
-)
-_OTHER_TEXT_FONT = (
-    'Courier',
-    11,
-)
-_TEXT_FONT = (
-    _WINDOWS_TEXT_FONT
-    if sys.platform == 'win32'
-    else _OTHER_TEXT_FONT
-)
+_START_WIDTH = 1200
+_START_HEIGHT = 680
 _SAMPLE_DOIS = '10.1038/nature14539\nhttps://doi.org/10.1126/science.aaa8415\n'
 _MAX_DELAY_SECONDS = 60.0
+_DELAY_STEP_SECONDS = 0.5
 _MAX_RETRIES = 10
-# Tk reports this many pixels per inch on a 100 % (unscaled) screen.
-_BASE_DPI = 96
-# These two sizes are for a 96-DPI (100 %) screen and are scaled to the
-# real screen, so Windows display scaling does not squeeze the layout.
-_SIDEBAR_TEXT_WIDTH = 230
+# Width of the sidebar, and smallest width of each text panel.
+_SIDEBAR_WIDTH = 250
 _MIN_PANEL_WIDTH = 220
-# Paddings in screen pixels, used as they are without scaling.
-_WINDOW_PADDING = 8
-_PANEL_GAP = 8
-_BOX_PADDING = 6
-_SIDEBAR_PADX = (
-    0,
-    _WINDOW_PADDING,
+_CONVERT_LABEL = 'Convert  (Ctrl+Enter)'
+_STOP_LABEL = 'Stop  (Ctrl+Enter)'
+_ENTER_KEYS = frozenset(
+    {
+        Qt.Key.Key_Return,
+        Qt.Key.Key_Enter,
+    }
 )
-_LEFT_PANEL_PADX = (
-    0,
-    _PANEL_GAP // 2,
-)
-_RIGHT_PANEL_PADX = (
-    _PANEL_GAP // 2,
-    0,
-)
-_GAP_BELOW_BOX = (
-    0,
-    8,
-)
-_GAP_ABOVE_ROW = (
-    6,
-    0,
-)
-_GAP_ABOVE_STATUS = (
-    4,
-    0,
-)
-_TEXT_PANEL_COLUMNS = (
-    0,
-    1,
-)
-# A small requested size in characters and lines lets the window, not
-# the text widget's default 80x24 characters, decide the panel size.
-_TEXT_PANEL_REQUESTED_WIDTH = 10
-_TEXT_PANEL_REQUESTED_HEIGHT = 5
-# Status messages wrap; leave room for this many lines beyond the first.
-_EXTRA_STATUS_LINES = 2
 # Failures listed in the warning dialog before "... and N more".
 _MAX_FAILURES_SHOWN = 15
 
@@ -109,9 +93,19 @@ class _ResultMessage:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _FinishedMessage:
-    """Message from the worker thread: the batch has ended."""
+    """Message from the worker thread: the batch has ended.
+
+    Attributes
+    ----------
+    stopped : bool
+        True if not every DOI was looked up.
+    error : str or None, default None
+        The unexpected error that ended the batch, or None if it ended
+        normally or was stopped by the user.
+    """
 
     stopped: bool
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -126,428 +120,225 @@ class _Batch:
     numbered: bool
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _TextPanel:
-    """A labelled frame and the text widget it holds."""
+class _TextPanel(QPlainTextEdit):
+    """Text area that turns Ctrl+Enter into a request to convert.
 
-    frame: ttk.LabelFrame
-    text: ScrolledText
+    The text area would otherwise take the key press itself, before the
+    window's Ctrl+Enter shortcut could see it.
+
+    Signals
+    -------
+    convert_requested
+        Ctrl+Enter was pressed in the text area.
+    """
+
+    convert_requested = pyqtSignal(arguments=[])
+
+    # Qt's method name, overridden.
+    def keyPressEvent(  # noqa: N802  # pylint: disable=invalid-name
+        self,
+        e: QKeyEvent | None,
+    ) -> None:
+        """Report Ctrl+Enter; handle every other key as usual."""
+        if (
+            e is not None
+            and e.key() in _ENTER_KEYS
+            and e.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            self.convert_requested.emit()
+            return
+        super().keyPressEvent(e)
 
 
-class Doi2RefApp:
+class Doi2RefApp(QMainWindow):
     """Main application window.
 
     Parameters
     ----------
-    root : tkinter.Tk
-        Top-level window to build the interface in.
+    log_file : Path or None, default None
+        Log file the program writes to, named in error messages; None
+        if there is none.
     """
 
-    def __init__(self, root: tk.Tk) -> None:
-        self.root = root
-        self.root.title(f'doi2ref {__version__} — DOI to reference')
-        self.root.geometry('1200x680')
-        self._scale = max(1.0, self.root.winfo_fpixels('1i') / _BASE_DPI)
-
+    def __init__(self, log_file: Path | None = None) -> None:
+        super().__init__()
+        self.setWindowTitle(f'doi2ref {__version__} — DOI to reference')
+        self._log_file = log_file
         self._messages: queue.Queue[_ResultMessage | _FinishedMessage] = queue.Queue()
         self._stop_event = threading.Event()
         self._batch: _Batch | None = None
         self._batch_failures: list[FetchResult] = []
         self._batch_done = 0
+        self._batch_started = 0.0
         # Case-folded DOIs converted successfully, for the "Remove
         # finished" button.
         self._finished_dois: set[str] = set()
+        self._timer = QTimer(self)
+        self._timer.setInterval(_POLL_INTERVAL_MS)
+        self._timer.timeout.connect(self._poll_messages)
 
-        self.format_var = tk.StringVar(value=OutputFormat.BIBTEX.value)
-        self.style_var = tk.StringVar(value=next(iter(CITATION_STYLES)))
-        self.locale_var = tk.StringVar(value=next(iter(LOCALES)))
-        self.numbered_var = tk.BooleanVar(value=False)
-        self.source_vars = {
-            source: tk.BooleanVar(value=True) for source in Source
-        }
-        self.delay_var = tk.StringVar(value=str(DEFAULT_DELAY_SECONDS))
-        self.retries_var = tk.StringVar(value=str(DEFAULT_RETRIES))
-        self.status_var = tk.StringVar(value='Paste DOIs on the left, then Convert.')
+        self.doi_text = self._text_panel()
+        self.doi_text.setPlainText(_SAMPLE_DOIS)
+        self.output_text = self._text_panel()
+        self.format_buttons: dict[OutputFormat, QRadioButton] = {}
+        self.style_combo = QComboBox()
+        self.locale_combo = QComboBox()
+        self.numbered_check = QCheckBox('Number [1], [2] …')
+        self.source_checks: dict[Source, QCheckBox] = {}
+        self.delay_spin = QDoubleSpinBox()
+        self.retries_spin = QSpinBox()
+        self.convert_button = QPushButton(_CONVERT_LABEL)
+        self.progress = QProgressBar()
+        self.status_label = QLabel('Paste DOIs on the left, then Convert.')
 
+        self.sidebar = self._build_sidebar()
         self._build_layout()
         self._bind_shortcuts()
         self._update_style_state()
+        self.resize(_START_WIDTH, _START_HEIGHT)
+
+    def _text_panel(self) -> _TextPanel:
+        """Create a scrollable text area in a fixed-width font."""
+        text = _TextPanel()
+        text.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        text.setMinimumWidth(_MIN_PANEL_WIDTH)
+        text.convert_requested.connect(self.convert_or_stop)
+        return text
 
     def _build_layout(self) -> None:
-        """Create the sidebar and the two equal-width text panels."""
-        # The sidebar is packed first so it keeps its width when the
-        # window shrinks; the panels take the remaining space.
-        sidebar = self._build_sidebar(self.root)
-        sidebar.pack(
-            side=tk.RIGHT,
-            fill=tk.Y,
-            padx=_SIDEBAR_PADX,
-            pady=_WINDOW_PADDING,
-        )
+        """Place the two equal-width text panels and the sidebar."""
+        body = QWidget()
+        layout = QHBoxLayout(body)
+        for title, text in (
+            ('DOIs', self.doi_text),
+            ('References', self.output_text),
+        ):
+            box = QGroupBox(title)
+            box_layout = QVBoxLayout(box)
+            box_layout.addWidget(text)
+            # Equal stretch gives both panels the same width.
+            layout.addWidget(box, stretch=1)
+        layout.addWidget(self.sidebar)
+        self.setCentralWidget(body)
 
-        panels = ttk.Frame(self.root)
-        panels.pack(
-            side=tk.LEFT,
-            fill=tk.BOTH,
-            expand=True,
-            padx=_WINDOW_PADDING,
-            pady=_WINDOW_PADDING,
-        )
-        # A shared "uniform" group makes grid give both columns exactly
-        # the same width, however the window is resized.
-        panels.columnconfigure(
-            _TEXT_PANEL_COLUMNS,
-            weight=1,
-            uniform='text_panels',
-        )
-        panels.rowconfigure(0, weight=1)
-
-        doi_panel = self._build_text_panel(panels, 'DOIs')
-        doi_frame = doi_panel.frame
-        doi_frame.grid(
-            row=0,
-            column=0,
-            sticky=tk.NSEW,
-            padx=_LEFT_PANEL_PADX,
-        )
-        self.doi_text = doi_panel.text
-        self.doi_text.insert('1.0', _SAMPLE_DOIS)
-
-        output_panel = self._build_text_panel(panels, 'References')
-        output_frame = output_panel.frame
-        output_frame.grid(
-            row=0,
-            column=1,
-            sticky=tk.NSEW,
-            padx=_RIGHT_PANEL_PADX,
-        )
-        self.output_text = output_panel.text
-
-        self._set_minimum_size(sidebar)
-
-    def _set_minimum_size(self, sidebar: ttk.Frame) -> None:
-        """Stop the window shrinking below what shows every control.
-
-        The height must fit the whole sidebar, plus room for the status
-        text to wrap onto extra lines; the width must fit the sidebar
-        and two usable text panels.
-
-        Parameters
-        ----------
-        sidebar : tkinter.ttk.Frame
-            The built sidebar, whose requested size sets the limits.
-        """
-        self.root.update_idletasks()
-        line_height = tkfont.nametofont('TkDefaultFont').metrics('linespace')
-
-        min_width = (
-            sidebar.winfo_reqwidth()
-            + 2 * self._scaled_pixels(_MIN_PANEL_WIDTH)
-            + _PANEL_GAP
-            + 3 * _WINDOW_PADDING
-        )
-        min_height = (
-            sidebar.winfo_reqheight()
-            + _EXTRA_STATUS_LINES * line_height
-            + 2 * _WINDOW_PADDING
-        )
-        self.root.minsize(min_width, min_height)
-
-    def _scaled_pixels(self, pixels: int) -> int:
-        """Scale a size given for a 96-DPI screen to this screen.
-
-        Parameters
-        ----------
-        pixels : int
-            Size in pixels at 96 DPI.
-
-        Returns
-        -------
-        int
-            Size in pixels on the current screen, never smaller than
-            ``pixels``.
-        """
-        return round(pixels * self._scale)
-
-    def _build_text_panel(self, parent: tk.Misc, title: str) -> _TextPanel:
-        """Create a labelled, scrollable text area, not yet placed.
-
-        Parameters
-        ----------
-        parent : tkinter.Misc
-            Widget to place the panel in.
-        title : str
-            Label shown above the text area.
-
-        Returns
-        -------
-        _TextPanel
-            The outer frame and the text widget inside it.
-        """
-        frame = ttk.LabelFrame(parent, text=title, padding=4)
-        text = ScrolledText(
-            frame,
-            wrap=tk.WORD,
-            font=_TEXT_FONT,
-            undo=True,
-            width=_TEXT_PANEL_REQUESTED_WIDTH,
-            height=_TEXT_PANEL_REQUESTED_HEIGHT,
-        )
-        text.pack(fill=tk.BOTH, expand=True)
-        # Handle Ctrl+Enter here and return "break", so the text
-        # widget's own binding does not also insert a line break.
-        text.bind('<Control-Return>', self._on_convert_shortcut)
-        return _TextPanel(frame=frame, text=text)
-
-    def _build_sidebar(self, parent: tk.Misc) -> ttk.Frame:
-        """Create the options and actions sidebar, not yet packed.
-
-        Parameters
-        ----------
-        parent : tkinter.Misc
-            Widget to place the sidebar in.
-
-        Returns
-        -------
-        tkinter.ttk.Frame
-            The sidebar frame.
-        """
-        sidebar = ttk.Frame(parent)
-        self._build_format_box(sidebar)
-        self._build_style_box(sidebar)
-        self._build_source_box(sidebar)
-        self._build_request_box(sidebar)
-        self._build_action_box(sidebar)
-        self._build_progress_box(sidebar)
+    def _build_sidebar(self) -> QWidget:
+        """Create the options and actions sidebar, of fixed width."""
+        sidebar = QWidget()
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._build_format_box())
+        layout.addWidget(self._build_style_box())
+        layout.addWidget(self._build_source_box())
+        layout.addWidget(self._build_request_box())
+        layout.addWidget(self._build_action_box())
+        layout.addStretch(1)
+        # The progress bar and status text sit at the bottom, level with
+        # the lower edge of the text panels.
+        layout.addWidget(self.progress)
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+        # A fixed width stops the sidebar following the length of each
+        # status message, which would shift the panels beside it.
+        sidebar.setFixedWidth(_SIDEBAR_WIDTH)
         return sidebar
 
-    def _build_progress_box(self, sidebar: ttk.Frame) -> None:
-        """Add the progress bar and status text at the sidebar's bottom.
-
-        Packing at the bottom lines them up with the lower edge of the
-        text panels, whatever the window height.
-
-        Parameters
-        ----------
-        sidebar : tkinter.ttk.Frame
-            Sidebar to add the widgets to.
-        """
-        box = ttk.Frame(sidebar)
-        box.pack(side=tk.BOTTOM, fill=tk.X)
-        # The bar is as long as the status text's wrap width, so the
-        # sidebar is always at least that wide. Without it, the sidebar
-        # would follow the width of each status message and the text
-        # panels beside it would shift.
-        self.progress = ttk.Progressbar(
-            box,
-            mode='determinate',
-            length=self._scaled_pixels(_SIDEBAR_TEXT_WIDTH),
-        )
-        self.progress.pack(fill=tk.X)
-        # Wrap long messages so they do not widen the sidebar.
-        ttk.Label(
-            box,
-            textvariable=self.status_var,
-            wraplength=self._scaled_pixels(_SIDEBAR_TEXT_WIDTH),
-            justify=tk.LEFT,
-        ).pack(anchor=tk.W, pady=_GAP_ABOVE_STATUS)
-
-    def _build_format_box(self, sidebar: ttk.Frame) -> None:
-        """Add the reference-type radio buttons.
-
-        Parameters
-        ----------
-        sidebar : tkinter.ttk.Frame
-            Sidebar to add the group to.
-        """
-        box = ttk.LabelFrame(sidebar, text='Reference type', padding=_BOX_PADDING)
-        box.pack(fill=tk.X, pady=_GAP_BELOW_BOX)
+    def _build_format_box(self) -> QGroupBox:
+        """Create the reference-type radio buttons."""
+        box = QGroupBox('Reference type')
+        layout = QVBoxLayout(box)
+        group = QButtonGroup(box)
         for output_format in OutputFormat:
-            ttk.Radiobutton(
-                box,
-                text=output_format.value,
-                value=output_format.value,
-                variable=self.format_var,
-                command=self._update_style_state,
-            ).pack(anchor=tk.W)
+            button = QRadioButton(output_format.value)
+            button.toggled.connect(self._update_style_state)
+            group.addButton(button)
+            layout.addWidget(button)
+            self.format_buttons[output_format] = button
+        self.format_buttons[OutputFormat.BIBTEX].setChecked(True)
+        return box
 
-    def _build_style_box(self, sidebar: ttk.Frame) -> None:
-        """Add the citation style, language and numbering controls.
+    def _build_style_box(self) -> QGroupBox:
+        """Create the citation style, language and numbering fields."""
+        box = QGroupBox('Citation style')
+        layout = QVBoxLayout(box)
+        self.style_combo.addItems(list(CITATION_STYLES))
+        layout.addWidget(self.style_combo)
+        layout.addWidget(QLabel('Language'))
+        self.locale_combo.addItems(list(LOCALES))
+        layout.addWidget(self.locale_combo)
+        layout.addWidget(self.numbered_check)
+        return box
 
-        Parameters
-        ----------
-        sidebar : tkinter.ttk.Frame
-            Sidebar to add the group to.
-        """
-        box = ttk.LabelFrame(sidebar, text='Citation style', padding=_BOX_PADDING)
-        box.pack(fill=tk.X, pady=_GAP_BELOW_BOX)
-        self.style_combo = ttk.Combobox(
-            box,
-            textvariable=self.style_var,
-            values=list(CITATION_STYLES),
-            state='readonly',
+    def _build_source_box(self) -> QGroupBox:
+        """Create the source check boxes, all ticked."""
+        box = QGroupBox('Source')
+        layout = QVBoxLayout(box)
+        for source in Source:
+            check = QCheckBox(source.value)
+            check.setChecked(True)
+            layout.addWidget(check)
+            self.source_checks[source] = check
+        return box
+
+    def _build_request_box(self) -> QGroupBox:
+        """Create the waiting-time and retry controls."""
+        box = QGroupBox('Requests')
+        layout = QFormLayout(box)
+        self.delay_spin.setRange(0, _MAX_DELAY_SECONDS)
+        self.delay_spin.setSingleStep(_DELAY_STEP_SECONDS)
+        self.delay_spin.setDecimals(1)
+        self.delay_spin.setValue(DEFAULT_DELAY_SECONDS)
+        self.retries_spin.setRange(0, _MAX_RETRIES)
+        self.retries_spin.setValue(DEFAULT_RETRIES)
+        layout.addRow('Wait (s)', self.delay_spin)
+        layout.addRow('Retries', self.retries_spin)
+        return box
+
+    def _build_action_box(self) -> QGroupBox:
+        """Create the action buttons."""
+        box = QGroupBox('Actions')
+        layout = QVBoxLayout(box)
+        self.convert_button.clicked.connect(self.convert_or_stop)
+        layout.addWidget(self.convert_button)
+        buttons = (
+            ('Copy references', self.copy_output),
+            ('Remove finished', self.remove_finished),
+            ('Clear', self.clear),
         )
-        self.style_combo.pack(fill=tk.X)
-        ttk.Label(box, text='Language').pack(anchor=tk.W, pady=_GAP_ABOVE_ROW)
-        self.locale_combo = ttk.Combobox(
-            box,
-            textvariable=self.locale_var,
-            values=list(LOCALES),
-            state='readonly',
-        )
-        self.locale_combo.pack(fill=tk.X)
-        self.numbered_check = ttk.Checkbutton(
-            box,
-            text='Number [1], [2] …',
-            variable=self.numbered_var,
-        )
-        self.numbered_check.pack(anchor=tk.W, pady=_GAP_ABOVE_ROW)
-
-    def _build_source_box(self, sidebar: ttk.Frame) -> None:
-        """Add the source check boxes.
-
-        Parameters
-        ----------
-        sidebar : tkinter.ttk.Frame
-            Sidebar to add the group to.
-        """
-        box = ttk.LabelFrame(sidebar, text='Source', padding=_BOX_PADDING)
-        box.pack(fill=tk.X, pady=_GAP_BELOW_BOX)
-        for source, variable in self.source_vars.items():
-            ttk.Checkbutton(box, text=source.value, variable=variable).pack(anchor=tk.W)
-
-    def _build_request_box(self, sidebar: ttk.Frame) -> None:
-        """Add the waiting-time and retry controls.
-
-        Parameters
-        ----------
-        sidebar : tkinter.ttk.Frame
-            Sidebar to add the group to.
-        """
-        box = ttk.LabelFrame(sidebar, text='Requests', padding=_BOX_PADDING)
-        box.pack(fill=tk.X, pady=_GAP_BELOW_BOX)
-        box.columnconfigure(1, weight=1)
-
-        ttk.Label(box, text='Wait (s)').grid(row=0, column=0, sticky=tk.W)
-        ttk.Spinbox(
-            box,
-            textvariable=self.delay_var,
-            from_=0,
-            to=_MAX_DELAY_SECONDS,
-            increment=0.5,
-            width=6,
-        ).grid(row=0, column=1, sticky=tk.E, pady=2)
-
-        ttk.Label(box, text='Retries').grid(row=1, column=0, sticky=tk.W)
-        ttk.Spinbox(
-            box,
-            textvariable=self.retries_var,
-            from_=0,
-            to=_MAX_RETRIES,
-            increment=1,
-            width=6,
-        ).grid(row=1, column=1, sticky=tk.E, pady=2)
-
-    def _build_action_box(self, sidebar: ttk.Frame) -> None:
-        """Add the action buttons.
-
-        Parameters
-        ----------
-        sidebar : tkinter.ttk.Frame
-            Sidebar to add the group to.
-        """
-        box = ttk.LabelFrame(sidebar, text='Actions', padding=_BOX_PADDING)
-        box.pack(fill=tk.X)
-        self.convert_button = ttk.Button(
-            box,
-            text='Convert  (Ctrl+Enter)',
-            command=self.convert_or_stop,
-        )
-        self.convert_button.pack(fill=tk.X, pady=2)
-        buttons = [
-            (
-                'Copy references',
-                self.copy_output,
-            ),
-            (
-                'Remove finished',
-                self.remove_finished,
-            ),
-            (
-                'Clear',
-                self.clear,
-            ),
-        ]
-        for label, command in buttons:
-            ttk.Button(box, text=label, command=command).pack(fill=tk.X, pady=2)
+        for label, action in buttons:
+            button = QPushButton(label)
+            button.clicked.connect(action)
+            layout.addWidget(button)
+        return box
 
     def _bind_shortcuts(self) -> None:
-        """Bind keyboard shortcuts to actions."""
-        self.root.bind('<Control-Return>', self._on_convert_shortcut)
+        """Bind Ctrl+Enter (on either Enter key) to Convert or Stop.
 
-    def _on_convert_shortcut(self, _event: 'tk.Event[tk.Misc]') -> str:
-        """Run Convert or Stop from the Ctrl+Enter shortcut.
-
-        Parameters
-        ----------
-        _event : tkinter.Event
-            The key event (unused).
-
-        Returns
-        -------
-        str
-            ``"break"``, which stops Tk from also handling the key press
-            elsewhere, such as inserting a line break in a text panel.
+        The text panels handle the keys themselves (see _TextPanel);
+        this covers the rest of the window.
         """
-        self.convert_or_stop()
-        return 'break'
+        for keys in ('Ctrl+Return', 'Ctrl+Enter'):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.activated.connect(self.convert_or_stop)
 
     def _selected_format(self) -> OutputFormat:
         """Return the output format chosen in the sidebar."""
-        return OutputFormat(self.format_var.get())
+        for output_format, button in self.format_buttons.items():
+            if button.isChecked():
+                return output_format
+        return OutputFormat.BIBTEX
 
     def _update_style_state(self) -> None:
         """Enable style options only for formatted citations."""
+        if len(self.format_buttons) < len(OutputFormat):
+            # Still building the radio buttons.
+            return
         is_citation = self._selected_format() is OutputFormat.CITATION
-        combo_state = 'readonly' if is_citation else 'disabled'
-        self.style_combo.configure(state=combo_state)
-        self.locale_combo.configure(state=combo_state)
-        self.numbered_check.configure(state='normal' if is_citation else 'disabled')
-
-    def _read_number(
-        self,
-        text: str,
-        label: str,
-        maximum: float,
-    ) -> float:
-        """Parse a number typed in a spin box.
-
-        Parameters
-        ----------
-        text : str
-            Text from the spin box.
-        label : str
-            Field name used in the error message.
-        maximum : float
-            Largest accepted value.
-
-        Returns
-        -------
-        float
-            The parsed value.
-
-        Raises
-        ------
-        ValueError
-            If the text is not a number between 0 and ``maximum``.
-        """
-        try:
-            value = float(text)
-        except ValueError as err:
-            raise ValueError(f'{label} must be a number.') from err
-        if not 0 <= value <= maximum:
-            raise ValueError(f'{label} must be between 0 and {maximum:g}.')
-        return value
+        for widget in (
+            self.style_combo,
+            self.locale_combo,
+            self.numbered_check,
+        ):
+            widget.setEnabled(is_citation)
 
     def _request_options(self) -> RequestOptions:
         """Build request options from the sidebar controls.
@@ -560,36 +351,30 @@ class Doi2RefApp:
         Raises
         ------
         ValueError
-            If no source is ticked, a number field is invalid or the
-            retry count is not a whole number.
+            If no source is ticked.
         """
         sources = tuple(
-            source for source, variable in self.source_vars.items()
-            if variable.get()
+            source for source, check in self.source_checks.items()
+            if check.isChecked()
         )
         if not sources:
             raise ValueError('Tick at least one source.')
-
-        delay = self._read_number(self.delay_var.get(), 'Wait (s)', _MAX_DELAY_SECONDS)
-        retries = self._read_number(self.retries_var.get(), 'Retries', _MAX_RETRIES)
-        if not retries.is_integer():
-            raise ValueError('Retries must be a whole number.')
-
         return RequestOptions(
             output_format=self._selected_format(),
-            style=CITATION_STYLES[self.style_var.get()],
-            locale=LOCALES[self.locale_var.get()],
+            style=CITATION_STYLES[self.style_combo.currentText()],
+            locale=LOCALES[self.locale_combo.currentText()],
             sources=sources,
-            delay_seconds=delay,
-            retries=int(retries),
+            delay_seconds=self.delay_spin.value(),
+            retries=self.retries_spin.value(),
         )
 
     def convert_or_stop(self) -> None:
         """Start a batch, or ask the running batch to stop."""
         if self._batch is not None:
             self._stop_event.set()
-            self.convert_button.configure(state='disabled')
-            self.status_var.set('Stopping after the current request…')
+            _LOGGER.info('Stop requested')
+            self.convert_button.setEnabled(False)
+            self.status_label.setText('Stopping after the current request…')
             return
         self._start_batch()
 
@@ -599,23 +384,26 @@ class Doi2RefApp:
         Shows a dialog instead when the panel holds no DOI or a sidebar
         option is invalid.
         """
-        dois = extract_dois(self.doi_text.get('1.0', tk.END))
+        dois = extract_dois(self.doi_text.toPlainText())
         if not dois:
-            messagebox.showinfo('doi2ref', 'No DOIs found in the left panel.')
+            QMessageBox.information(self, 'doi2ref', 'No DOIs found in the left panel.')
             return
         try:
             options = self._request_options()
         except ValueError as err:
-            messagebox.showerror('doi2ref', str(err))
+            QMessageBox.critical(self, 'doi2ref', str(err))
             return
 
-        self._batch = _Batch(options=options, numbered=self.numbered_var.get())
+        self._batch = _Batch(options=options, numbered=self.numbered_check.isChecked())
         self._batch_failures = []
         self._batch_done = 0
         self._stop_event.clear()
-        self.convert_button.configure(text='Stop  (Ctrl+Enter)')
-        self.progress.configure(maximum=len(dois), value=0)
-        self.status_var.set(f'Looking up {len(dois)} DOI(s)…')
+        self.convert_button.setText(_STOP_LABEL)
+        self.progress.setRange(0, len(dois))
+        self.progress.setValue(0)
+        self.status_label.setText(f'Looking up {len(dois)} DOI(s)…')
+        self._batch_started = time.perf_counter()
+        _LOGGER.info('Batch started: %d DOI(s) with %s', len(dois), options)
 
         worker = threading.Thread(
             target=self._run_lookups,
@@ -626,7 +414,7 @@ class Doi2RefApp:
             daemon=True,
         )
         worker.start()
-        self.root.after(_POLL_INTERVAL_MS, self._poll_messages)
+        self._timer.start()
 
     def _run_lookups(self, dois: list[str], options: RequestOptions) -> None:
         """Fetch references on the worker thread and report back.
@@ -640,6 +428,7 @@ class Doi2RefApp:
         """
         total = len(dois)
         processed = 0
+        crash: str | None = None
 
         # A closure gives the callback access to ``total``, the queue
         # and the ``processed`` counter.
@@ -663,28 +452,32 @@ class Doi2RefApp:
                 on_result=report,
                 stop_event=self._stop_event,
             )
+        # Logged with its traceback rather than lost with the thread;
+        # the finally clause still frees the window.
+        except Exception as err:  # pylint: disable=broad-exception-caught
+            _LOGGER.exception('Lookups stopped by an unexpected error')
+            crash = f'{type(err).__name__}: {err}'
         finally:
-            self._messages.put(_FinishedMessage(stopped=processed < total))
+            self._messages.put(
+                _FinishedMessage(stopped=processed < total, error=crash),
+            )
 
     def _poll_messages(self) -> None:
         """Apply worker-thread messages to the widgets.
 
-        Polls again after ``_POLL_INTERVAL_MS`` until the batch has
-        finished.
+        Runs on the timer until the batch has finished.
         """
         while True:
             try:
                 message = self._messages.get_nowait()
             except queue.Empty:
-                break
-
+                return
             if isinstance(message, _ResultMessage):
                 self._show_result(message)
             else:
+                self._timer.stop()
                 self._finish_batch(message)
                 return
-
-        self.root.after(_POLL_INTERVAL_MS, self._poll_messages)
 
     def _show_result(self, message: _ResultMessage) -> None:
         """Append one reference to the right panel and update progress.
@@ -707,22 +500,22 @@ class Doi2RefApp:
                 .casefold()
             )
             self._finished_dois.add(folded_doi)
-            existing = self.output_text.get('1.0', tk.END)
             combined = append_reference(
-                existing,
+                self.output_text.toPlainText(),
                 result.reference,
                 self._batch.options.output_format,
                 numbered=self._batch.numbered,
             )
-            self.output_text.delete('1.0', tk.END)
-            self.output_text.insert('1.0', combined + '\n')
-            self.output_text.see(tk.END)
+            self.output_text.setPlainText(combined + '\n')
+            scroll_bar = self.output_text.verticalScrollBar()
+            if scroll_bar is not None:
+                scroll_bar.setValue(scroll_bar.maximum())
         else:
             self._batch_failures.append(result)
 
         self._batch_done = message.done
-        self.progress.configure(value=message.done)
-        self.status_var.set(
+        self.progress.setValue(message.done)
+        self.status_label.setText(
             f'{message.done} of {message.total} looked up, '
             f'{len(self._batch_failures)} failed.'
         )
@@ -736,15 +529,38 @@ class Doi2RefApp:
             Whether the batch was stopped early.
         """
         self._batch = None
-        self.convert_button.configure(text='Convert  (Ctrl+Enter)', state='normal')
+        self.convert_button.setText(_CONVERT_LABEL)
+        self.convert_button.setEnabled(True)
 
-        prefix = 'Stopped' if message.stopped else 'Done'
-        self.status_var.set(
+        if message.error is not None:
+            prefix = 'Stopped by an error'
+        elif message.stopped:
+            prefix = 'Stopped'
+        else:
+            prefix = 'Done'
+        summary = (
             f'{prefix}: {self._batch_done} looked up, '
             f'{len(self._batch_failures)} failed.'
         )
+        self.status_label.setText(summary)
+        _LOGGER.info(
+            'Batch finished in %.1f s: %s',
+            time.perf_counter() - self._batch_started,
+            summary,
+        )
+        if message.error is not None:
+            QMessageBox.critical(
+                self,
+                'Lookups stopped by an error',
+                'The batch ended early because of an unexpected error:\n\n'
+                f'{message.error}{self._log_hint()}',
+            )
         if self._batch_failures:
-            messagebox.showwarning('Some DOIs failed', self._failure_summary())
+            QMessageBox.warning(
+                self,
+                'Some DOIs failed',
+                self._failure_summary() + self._log_hint(),
+            )
 
     def _failure_summary(self) -> str:
         """Describe the failed DOIs, short enough to fit on screen.
@@ -766,19 +582,26 @@ class Doi2RefApp:
         lines.append('\nThey stay in the DOI panel; press Convert to try again.')
         return 'These DOIs could not be converted:\n\n' + '\n'.join(lines)
 
+    def _log_hint(self) -> str:
+        """Return a sentence naming the log file, or '' if none."""
+        if self._log_file is None:
+            return ''
+        return f'\n\nDetails are in the log file:\n{self._log_file}'
+
     def copy_output(self) -> None:
         """Copy the whole references panel to the clipboard."""
         text = (
             self.output_text
-            .get('1.0', tk.END)
+            .toPlainText()
             .strip()
         )
         if not text:
-            self.status_var.set('Nothing to copy.')
+            self.status_label.setText('Nothing to copy.')
             return
-        self.root.clipboard_clear()
-        self.root.clipboard_append(text)
-        self.status_var.set('References copied to the clipboard.')
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text)
+        self.status_label.setText('References copied to the clipboard.')
 
     def remove_finished(self) -> None:
         """Remove DOIs already converted from the left panel.
@@ -787,60 +610,72 @@ class Doi2RefApp:
         text in it, such as links or prose around the DOIs, is dropped.
         """
         if self._batch is not None:
-            self.status_var.set('Wait for the current batch to finish.')
+            self.status_label.setText('Wait for the current batch to finish.')
             return
 
-        dois = extract_dois(self.doi_text.get('1.0', tk.END))
+        dois = extract_dois(self.doi_text.toPlainText())
         remaining = [
             doi for doi in dois
             if doi.casefold() not in self._finished_dois
         ]
         removed_count = len(dois) - len(remaining)
-
-        self.doi_text.delete('1.0', tk.END)
-        if remaining:
-            self.doi_text.insert('1.0', '\n'.join(remaining) + '\n')
-        self.status_var.set(
+        self.doi_text.setPlainText('\n'.join(remaining) + '\n' if remaining else '')
+        self.status_label.setText(
             f'Removed {removed_count} finished DOI(s); {len(remaining)} left.'
         )
 
     def clear(self) -> None:
         """Empty both text panels and forget finished DOIs."""
         if self._batch is not None:
-            self.status_var.set('Wait for the current batch to finish.')
+            self.status_label.setText('Wait for the current batch to finish.')
             return
-        self.doi_text.delete('1.0', tk.END)
-        self.output_text.delete('1.0', tk.END)
+        self.doi_text.clear()
+        self.output_text.clear()
         self._finished_dois.clear()
-        self.progress.configure(value=0)
-        self.status_var.set('Cleared.')
+        self.progress.setValue(0)
+        self.status_label.setText('Cleared.')
 
 
-def _enable_high_dpi() -> None:
-    """Ask Windows for sharp text on high-DPI screens.
+def _install_error_dialog(log_file: Path | None) -> None:
+    """Log errors nothing caught and show them in a message box.
 
-    Does nothing on other platforms.
+    Without this, PyQt6 ends the program when a button's action raises.
     """
-    if sys.platform != 'win32':
-        return
-    try:
-        # ctypes.windll exists only on Windows, so the import waits
-        # until the platform check has passed.
-        import ctypes  # pylint: disable=import-outside-toplevel
 
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except (AttributeError, OSError):
-        # Older Windows versions lack shcore; the window is just
-        # blurrier.
-        pass
+    def report(
+        error_type: type[BaseException],
+        error: BaseException,
+        traceback: TracebackType | None,
+    ) -> None:
+        log_uncaught(error_type, error, traceback)
+        hint = ''
+        if log_file is not None:
+            hint = f'\n\nDetails are in the log file:\n{log_file}'
+        QMessageBox.critical(
+            None,
+            'Unexpected error',
+            f'{error_type.__name__}: {error}{hint}',
+        )
+
+    sys.excepthook = report
 
 
 def main() -> None:
-    """Open the doi2ref window."""
-    _enable_high_dpi()
-    root = tk.Tk()
-    Doi2RefApp(root)
-    root.mainloop()
+    """Open the doi2ref window, logging the run to a file."""
+    log_file = setup_logging()
+    _LOGGER.info(
+        'doi2ref %s started (Python %s, %s); log %s',
+        __version__,
+        platform.python_version(),
+        platform.platform(),
+        log_file,
+    )
+    app = QApplication(sys.argv)
+    _install_error_dialog(log_file)
+    window = Doi2RefApp(log_file)
+    window.show()
+    app.exec()
+    _LOGGER.info('doi2ref closed')
 
 
 if __name__ == '__main__':

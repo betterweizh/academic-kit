@@ -432,3 +432,16 @@ def test_download_decodes_utf8(monkeypatch):
     """Non-ASCII author names survive decoding."""
     monkeypatch.setattr(urllib.request, 'urlopen', _fake_urlopen)
     assert core._download('https://doi.org/x', {}, 5) == 'Müller, Zoë'
+
+
+def test_fetch_reference_logs_attempts_and_result(fake_download, caplog):
+    """Log each failed attempt and where the reference came from."""
+    fake_download(_http_error(404), BIBTEX)
+
+    with caplog.at_level('DEBUG', logger='doi2ref'):
+        fetch_reference('10.1038/nature14539', NO_DELAY, _throttle())
+
+    assert f'GET {DOI_URL} (attempt 1 / ' in caplog.text
+    assert 'doi.org attempt 1 /' in caplog.text
+    assert 'permanent for this source' in caplog.text
+    assert 'Found 10.1038/nature14539 via Crossref' in caplog.text

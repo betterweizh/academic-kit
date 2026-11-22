@@ -6,12 +6,13 @@ Selected sources are tried in order, so the first is the main source and
 later ones are used only for DOIs the earlier ones could not resolve.
 
 Requests are sent one at a time with a minimum delay between them, and
-failed requests can be retried, so the servers are not flooded. Only the
-standard library is used, so the GUI and CLI run on a stock Python.
+failed requests can be retried, so the servers are not flooded. The
+lookups use only the standard library; only the window needs PyQt6.
 """
 
 import http.client
 import json
+import logging
 import re
 import threading
 import time
@@ -22,6 +23,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from http import HTTPStatus
+
+# Messages go nowhere until an application sets up logging; the window
+# writes them to a log file (see doi2ref.logs).
+_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     'BROWSER_HEADERS',
@@ -454,8 +459,10 @@ def fetch_reference(
 
     for source in options.sources:
         url = source_url(source, doi, options.output_format)
-        for _attempt in range(options.retries + 1):
+        attempts = options.retries + 1
+        for attempt in range(1, attempts + 1):
             throttle.wait()
+            _LOGGER.debug('GET %s (attempt %d / %d)', url, attempt, attempts)
             try:
                 body = _download(url, headers, options.timeout_seconds)
                 reference = clean_response(body, options.output_format)
@@ -467,12 +474,24 @@ def fetch_reference(
                 if isinstance(err, urllib.error.HTTPError):
                     # Release the connection held by the error response.
                     err.close()
-                if _is_temporary(err):
+                temporary = _is_temporary(err)
+                _LOGGER.warning(
+                    '%s attempt %d / %d failed for %s: %s (%s)',
+                    source.value,
+                    attempt,
+                    attempts,
+                    doi,
+                    _describe_error(err),
+                    'temporary' if temporary else 'permanent for this source',
+                )
+                if temporary:
                     continue
                 # Permanent for this source; move on to the next one.
                 break
+            _LOGGER.info('Found %s via %s', doi, source.value)
             return FetchResult(doi=doi, reference=reference, source=source)
 
+    _LOGGER.warning('No reference for %s: %s', doi, last_error)
     return FetchResult(doi=doi, error=last_error)
 
 
@@ -505,9 +524,11 @@ def fetch_references(
     results: list[FetchResult] = []
 
     for index, doi in enumerate(dois):
+        _LOGGER.info('DOI %d / %d: %s', index + 1, len(dois), doi)
         try:
             result = fetch_reference(doi, options, throttle)
         except StopRequested:
+            _LOGGER.info('Stopped before %s finished', doi)
             break
         results.append(result)
         if on_result is not None:

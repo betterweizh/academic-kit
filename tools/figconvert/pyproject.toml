@@ -1,12 +1,14 @@
 [project]
 name = 'figconvert'
-version = '0.1.0'
+version = '0.1.1'
 description = 'Convert vector and raster figures, one at a time or in batches, to raster images at a chosen resolution, with a simple GUI.'
 readme = 'README.md'
 requires-python = '>=3.12'
 dependencies = [
+    'cairosvg>=2.7',
     'pillow>=11.0',
     'pymupdf>=1.25',
+    'PyQt6>=6.7',
 ]
 
 [project.urls]

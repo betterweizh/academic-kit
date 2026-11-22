@@ -54,7 +54,8 @@ CSL JSON on the right.
   the left panel, leaving the failed ones to retry.
 - **Forgiving input:** bare DOIs, `doi:` prefixes, `doi.org` links, or a
   whole pasted reference list; duplicates are dropped.
-- **No third-party dependencies:** only the Python standard library.
+- **One dependency:** the window uses [PyQt6](https://pypi.org/project/PyQt6/),
+  installed automatically; the lookups use only the standard library.
 
 References come from [doi.org content negotiation](https://citation.doi.org/docs.html),
 which covers Crossref, DataCite and mEDRA DOIs, and from the
@@ -62,9 +63,10 @@ which covers Crossref, DataCite and mEDRA DOIs, and from the
 
 ## 2. Installation
 
-You need **Python 3.12 or later with Tkinter** (the GUI toolkit). The
-easiest route is [uv](https://docs.astral.sh/uv/), which can install
-Python for you and keeps doi2ref in its own environment.
+You need **Python 3.12 or later**. The window uses PyQt6, which is
+installed together with doi2ref. The easiest route is
+[uv](https://docs.astral.sh/uv/), which can install Python for you and
+keeps doi2ref in its own environment.
 
 ### 2.1 Install the prerequisites
 
@@ -78,18 +80,14 @@ winget install --id=astral-sh.uv -e
 winget install --id=Git.Git -e
 ```
 
-Prefer a plain Python? Install it from [python.org](https://www.python.org/downloads/),
-keep **"tcl/tk and IDLE"** ticked (it is by default) and tick
-**"Add python.exe to PATH"**.
+Prefer a plain Python? Install it from [python.org](https://www.python.org/downloads/)
+and tick **"Add python.exe to PATH"**.
 
 **macOS**
 
 ```bash
 # uv and Git
 brew install uv git
-
-# Tkinter, only if you use Homebrew's own Python instead of uv's
-brew install python-tk@3.13
 ```
 
 **Linux**
@@ -98,22 +96,22 @@ brew install python-tk@3.13
 # uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Tkinter (for the system Python) and Git — Debian / Ubuntu
-sudo apt install python3-tk git
+# Git — Debian / Ubuntu (libxcb-cursor0 is needed by Qt windows)
+sudo apt install git libxcb-cursor0
 
-# Tkinter and Git — Fedora
-sudo dnf install python3-tkinter git
+# Git — Fedora
+sudo dnf install git
 
-# Tkinter and Git — Arch
-sudo pacman -S tk git
+# Git — Arch
+sudo pacman -S git
 ```
 
 Close and reopen the terminal after installing uv so it is on your PATH.
 
 ### 2.2 Install doi2ref from GitHub
 
-**Option A — as an app with uv (recommended).** Puts the `doi2ref` and
-`doi2ref-cli` commands on your PATH:
+**Option A — as an app with uv (recommended).** Puts the `doi2ref`
+command, which opens the window, on your PATH:
 
 ```bash
 # Install the latest version
@@ -194,25 +192,17 @@ opens without a console window.
    the converted DOIs from the left so only failures remain; **Clear**
    empties both panels.
 
-### 3.2 Command line
+### 3.2 Log file
 
-```bash
-# BibTeX
-doi2ref-cli 10.1038/nature14539
+Each run is logged to `doi2ref.log`: program start, each batch with its
+settings, every request (source, attempt and retry) with its result,
+and every error with its traceback. The failure dialog names the file.
 
-# IEEE citation
-doi2ref-cli 10.1038/nature14539 -f formatted -s ieee
-
-# File in, file out
-doi2ref-cli -i dois.txt -f ris -o refs.ris
-
-# Crossref, 2 s wait, 3 retries
-doi2ref-cli -i dois.txt --source crossref -d 2 -r 3
-```
-
-Progress is shown in the terminal as each DOI finishes. Press Ctrl+C to
-stop early; the references converted so far are still printed or saved.
-Run `doi2ref-cli --help` for every option.
+Opened from the academic-kit launcher, doi2ref writes the log to the
+folder and file name set for it in the launcher's **Settings → Logs**
+dialog. Started on its own, it writes `doi2ref.log` in the folder it
+was started from. At 1 MB the file is renamed with `.1` added and a new
+one started; three old files are kept.
 
 ## 4. Update and uninstall
 
@@ -248,7 +238,7 @@ pipx uninstall doi2ref
 python -m pip uninstall doi2ref
 ```
 
-This removes the `doi2ref` and `doi2ref-cli` commands and doi2ref's own
+This removes the `doi2ref` command and doi2ref's own
 environment.
 
 - **Installed from a clone** (`uv sync` / `pip install -e .`)? Delete the
@@ -260,7 +250,7 @@ environment.
 
 | Problem | Fix |
 | --- | --- |
-| `No module named 'tkinter'` / `_tkinter` | Install Tkinter for your Python (see [2.1](#21-install-the-prerequisites)), or let uv provide Python: `uv tool install --python 3.13 "git+https://github.com/betterweizh/academic-kit#subdirectory=tools/doi2ref"` |
+| Linux: `Could not load the Qt platform plugin "xcb"` | Install `libxcb-cursor0` (Debian/Ubuntu) or your distribution's `xcb-util-cursor` package |
 | `doi2ref` is not recognised | Run `uv tool update-shell` and open a new terminal |
 | `git` is not recognised during install | Install Git (see [2.1](#21-install-the-prerequisites)) and open a new terminal |
 | Many "too many requests (HTTP 429)" | Raise **Wait (s)**, e.g. to 2–5 seconds |
@@ -307,4 +297,7 @@ version; see the
 
 ## 7. License
 
-doi2ref is released under the [MIT License](LICENSE).
+doi2ref is released under the [MIT License](LICENSE). Its window uses
+PyQt6, which is released under the GPL v3: anyone who distributes
+doi2ref together with PyQt6 must follow the GPL for the combined
+program.

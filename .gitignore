@@ -25,3 +25,7 @@ Thumbs.db
 
 # Files the Claude desktop app drops into connected folders
 Claude outputs/
+
+# Log files the launcher and tools write into the folder they run from
+*.log
+*.log.[0-9]

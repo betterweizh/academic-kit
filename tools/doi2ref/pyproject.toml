@@ -1,12 +1,14 @@
 [project]
 name = 'doi2ref'
-version = '0.1.0'
+version = '0.1.1'
 description = 'Turn DOIs into formatted citations, BibTeX, RIS or CSL JSON, with a simple GUI.'
 readme = 'README.md'
 license = 'MIT'
 license-files = ['LICENSE']
 requires-python = '>=3.12'
-dependencies = []
+dependencies = [
+    'PyQt6>=6.7',
+]
 keywords = [
     'doi',
     'bibtex',
@@ -37,9 +39,6 @@ Changelog = 'https://github.com/betterweizh/academic-kit/blob/main/tools/doi2ref
 
 [project.gui-scripts]
 doi2ref = 'doi2ref.gui:main'
-
-[project.scripts]
-doi2ref-cli = 'doi2ref.cli:main'
 
 # Lets the academic-kit launcher show a button that runs
 # ``python -m doi2ref``. The tool does not depend on the launcher.

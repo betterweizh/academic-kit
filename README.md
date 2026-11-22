@@ -5,11 +5,15 @@ button opens its tool in a separate window and process, so the tools
 never interfere with each other or with the launcher.
 
 ```
-┌─ academic-kit ─────────────┐
-│ [        doi2ref         ] │
-│ [       figconvert       ] │
-│ Choose a tool to open.     │
-└────────────────────────────┘
+┌─ academic-kit ─────────────────┐
+│ Settings                       │
+│  ┌──────────┐    ┌──────────┐  │
+│  │          │    │          │  │
+│  │ doi2ref  │    │figconvert│  │
+│  │          │    │          │  │
+│  └──────────┘    └──────────┘  │
+│     Choose a tool to open.     │
+└────────────────────────────────┘
 ```
 
 | Tool | What it does |
@@ -30,10 +34,16 @@ Hover over a button to see what the tool does.
 
 ## 1. Installation
 
-You need [uv](https://docs.astral.sh/uv/) and Python 3.12 or later with
-Tkinter; uv can install Python for you. See the
+You need [uv](https://docs.astral.sh/uv/) and Python 3.12 or later; uv
+can install Python for you. The windows use
+[PyQt6](https://pypi.org/project/PyQt6/), which `uv sync` installs with
+everything else. See the
 [doi2ref README](tools/doi2ref/README.md#21-install-the-prerequisites)
 for per-platform prerequisites.
+
+PyQt6 is released under the GPL v3. That does not restrict using
+academic-kit, but anyone who distributes it, or software built on it,
+must follow the GPL.
 
 ```bash
 # Get the code
@@ -62,8 +72,35 @@ uv run doi2ref
 uv run figconvert
 ```
 
-`doi2ref-cli` (the doi2ref command-line interface) is also available
-through `uv run doi2ref-cli --help`.
+Every function is used through the windows; the tools have no
+command-line interface.
+
+### Log files: Settings → Logs
+
+The launcher and each tool write their own log file, recording each run,
+each batch and request, and every error with its traceback.
+
+- **Settings → Logs…** in the launcher opens a dialog with one row per
+  program (academic-kit, doi2ref, figconvert): its log folder (type it
+  or use **Browse…**) and its log file name. A name without a suffix
+  gets `.log`; two programs cannot share one file. **Use defaults**
+  puts every row back to the default.
+- By default each program writes `<program>.log` (`academic-kit.log`,
+  `doi2ref.log`, `figconvert.log`) into the folder the launcher was
+  started from: the `academic-kit` folder when you use
+  `uv run academic-kit`.
+- The settings are remembered (in `%APPDATA%\academic-kit\settings.json`
+  on Windows, `~/.config/academic-kit/settings.json` elsewhere). The
+  launcher switches its own log at once; tools opened from then on use
+  their new file, and tools already open keep theirs.
+- **Settings → Open launcher log folder** opens the launcher's folder.
+- A tool opened again while it is still running writes to a numbered
+  file next to its usual one (`figconvert-2.log`, `-3`, …), because two
+  running copies cannot share one log file.
+- A tool started on its own (`uv run figconvert`) writes
+  `<tool>.log` in the folder it was started from.
+- At 1 MB a file is renamed (`.1`, then `.2`, `.3` added) and a new one
+  started.
 
 ## 3. Project layout
 
@@ -87,8 +124,11 @@ its own.
 ## 4. Adding a tool
 
 1. Create the package under `tools/`, for example with
-   `uv init --package tools/newtool`. Give it a Tkinter `main()` and a
-   `__main__.py` so `python -m newtool` opens its window.
+   `uv init --package tools/newtool`. Give it a PyQt6 `main()` and a
+   `__main__.py` so `python -m newtool` opens its window. To follow the
+   launcher's log settings, its `main()` should log to the file named in
+   the `ACADEMIC_KIT_LOG_FILE` environment variable (copy
+   `tools/figconvert/src/figconvert/logs.py`).
 2. In the tool's `pyproject.toml`, declare the launcher entry point. Its
    name is the button label and its value is the module to run:
 
